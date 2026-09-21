@@ -1,0 +1,74 @@
+name: build-windows-artifact
+
+# Build Aseprite for Windows x64 on GitHub Actions and upload the result
+# as a downloadable artifact (aseprite.exe + data/).
+#
+# Usage: copy this file into .github/workflows/ of your own fork, commit it
+# to the default branch (this triggers the build), or run it manually from
+# the Actions tab (workflow_dispatch).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+    - '.github/workflows/build-windows-artifact.yml'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+    - name: Checkout (with submodules and full history)
+      uses: actions/checkout@v7
+      with:
+        submodules: 'recursive'
+        fetch-depth: 0          # full history + tags => proper version string
+
+    - name: Setup Ninja
+      uses: aseprite/get-ninja@main
+
+    - name: Setup MSVC
+      uses: TheMrMilchmann/setup-msvc-dev@v4
+      with:
+        arch: x64
+
+    - name: Download prebuilt Skia
+      shell: bash
+      run: |
+        this_dir=$(cygpath "${{ github.workspace }}")
+        skia_url=$(source $this_dir/laf/misc/skia-url.sh | xargs)
+        skia_file=$(basename $skia_url)
+        echo "Skia URL: $skia_url"
+        curl --ssl-revoke-best-effort -L --retry 5 --retry-delay 5 --retry-all-errors \
+          -o "$skia_file" "$skia_url"
+        unzip -q "$skia_file" -d skia
+
+    - name: Configure
+      shell: bash
+      run: |
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DENABLE_TESTS=OFF \
+          -DENABLE_SCRIPTING=ON \
+          -DENABLE_CCACHE=OFF \
+          -DLAF_BACKEND=skia \
+          -DSKIA_DIR=$(cygpath -m "$PWD/skia") \
+          -DSKIA_LIBRARY_DIR=$(cygpath -m "$PWD/skia/out/Release-x64")
+
+    - name: Compile
+      shell: bash
+      run: cd build && ninja aseprite
+
+    - name: Report version
+      shell: bash
+      run: |
+        ./build/bin/aseprite.exe --version > version.txt 2>&1 || true
+        cat version.txt || true
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: aseprite-windows-x64
+        path: build/bin
+        if-no-files-found: error
+        retention-days: 14
