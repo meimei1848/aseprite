@@ -1,11 +1,17 @@
 name: build-windows-artifact
 
-# Build Aseprite for Windows x64 on GitHub Actions and upload the result
-# as a downloadable artifact (aseprite.exe + data/).
+# Build Aseprite for Windows x64 on GitHub Actions and upload the result as a
+# downloadable artifact (aseprite.exe + data/).
 #
-# Usage: copy this file into .github/workflows/ of your own fork, commit it
-# to the default branch (this triggers the build), or run it manually from
-# the Actions tab (workflow_dispatch).
+# Why -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON:
+#   On Windows, libarchive (used by src/app/extensions.cpp to unzip
+#   .aseprite-extension packages) links OpenSSL when CMake finds it. The
+#   resulting aseprite.exe then hard-depends on libcrypto-3-x64.dll and refuses
+#   to start on machines without it (STATUS_DLL_NOT_FOUND / 0xC0000135).
+#   Disabling the OpenSSL lookup keeps the binary self-contained.
+#
+# The "Verify binary" step fails the build if the exe cannot start or if it
+# imports a DLL that is neither a system DLL nor shipped next to the exe.
 
 on:
   workflow_dispatch:
@@ -22,7 +28,7 @@ jobs:
       uses: actions/checkout@v7
       with:
         submodules: 'recursive'
-        fetch-depth: 0          # full history + tags => proper version string
+        fetch-depth: 0
 
     - name: Setup Ninja
       uses: aseprite/get-ninja@main
@@ -39,31 +45,21 @@ jobs:
         skia_url=$(source $this_dir/laf/misc/skia-url.sh | xargs)
         skia_file=$(basename $skia_url)
         echo "Skia URL: $skia_url"
-        curl --ssl-revoke-best-effort -L --retry 5 --retry-delay 5 --retry-all-errors \
-          -o "$skia_file" "$skia_url"
+        curl --ssl-revoke-best-effort -L --retry 5 --retry-delay 5 --retry-all-errors -o "$skia_file" "$skia_url"
         unzip -q "$skia_file" -d skia
 
     - name: Configure
       shell: bash
       run: |
-        cmake -S . -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DENABLE_TESTS=OFF \
-          -DENABLE_SCRIPTING=ON \
-          -DENABLE_CCACHE=OFF \
-          -DLAF_BACKEND=skia \
-          -DSKIA_DIR=$(cygpath -m "$PWD/skia") \
-          -DSKIA_LIBRARY_DIR=$(cygpath -m "$PWD/skia/out/Release-x64")
+        cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_TESTS=OFF -DENABLE_SCRIPTING=ON -DENABLE_CCACHE=OFF -DCMAKE_DISABLE_FIND_PACKAGE_OpenSSL=ON -DLAF_BACKEND=skia -DSKIA_DIR=$(cygpath -m "$PWD/skia") -DSKIA_LIBRARY_DIR=$(cygpath -m "$PWD/skia/out/Release-x64")
 
     - name: Compile
       shell: bash
       run: cd build && ninja aseprite
 
-    - name: Report version
-      shell: bash
-      run: |
-        ./build/bin/aseprite.exe --version > version.txt 2>&1 || true
-        cat version.txt || true
+    - name: Verify binary (starts + no missing DLLs)
+      shell: pwsh
+      run: ./.github/scripts/check-runtime-deps.ps1 -BinDir build/bin
 
     - name: Upload artifact
       uses: actions/upload-artifact@v7
